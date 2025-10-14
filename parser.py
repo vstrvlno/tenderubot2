@@ -1,7 +1,7 @@
 import requests
-import sqlite3
+from bs4 import BeautifulSoup
+import xml.etree.ElementTree as ET
 import logging
-from datetime import datetime
 
 logging.basicConfig(
     filename="parser.log",
@@ -9,122 +9,76 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-DB_PATH = "database.db"
-BASE_URL = "https://ows.goszakup.gov.kz/v3/public/orders"
-DEFAULT_LIMIT = 30
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, timeout=30)
-
-def create_tables():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS tenders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            purchase_number TEXT UNIQUE,
-            name TEXT,
-            customer TEXT,
-            amount REAL,
-            publish_date TEXT,
-            inserted_at TEXT
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            keyword TEXT,
-            UNIQUE(user_id, keyword)
-        )
-    """)
-    conn.commit()
-    conn.close()
-    logging.info("DB tables ensured.")
-
-def fetch_tenders(limit=DEFAULT_LIMIT):
-    params = {"limit": limit, "sort_by": "-publish_date"}
+def parse_rss(url):
     try:
-        r = requests.get(BASE_URL, params=params, timeout=15)
+        r = requests.get(url, timeout=15)
         r.raise_for_status()
-        data = r.json()
-        items = data.get("results") or data.get("data") or []
-        logging.info(f"Fetched {len(items)} tenders from API")
-        return items
+        soup = BeautifulSoup(r.content, "xml")
+        items = soup.find_all("item")
+        tenders = []
+        for item in items[:10]:
+            tenders.append({
+                "title": item.title.text,
+                "link": item.link.text,
+                "date": item.pubDate.text
+            })
+        return tenders
     except Exception as e:
-        logging.exception("Error fetching tenders")
+        logging.exception(f"RSS error {url}")
         return []
 
-def save_new_tenders(tenders):
-    conn = get_conn()
-    cur = conn.cursor()
-    added = []
-    for t in tenders:
-        name = t.get("name_ru") or t.get("name") or ""
-        purchase_number = t.get("purchase_number") or t.get("id")
-        customer = t.get("ref_customer_name_ru") or t.get("customer") or ""
-        amount = t.get("amount") or 0
-        publish_date = t.get("publish_date") or t.get("publishDate") or ""
-        if not purchase_number:
-            continue
-        try:
-            cur.execute("""
-                INSERT INTO tenders (purchase_number, name, customer, amount, publish_date, inserted_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (str(purchase_number), name, customer, amount, publish_date, datetime.utcnow().isoformat()))
-            conn.commit()
-            added.append({
-                "purchase_number": purchase_number,
-                "name": name,
-                "customer": customer,
-                "amount": amount,
-                "publish_date": publish_date
+def parse_html(url, selector):
+    if not url or not selector:
+        return []
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        elements = soup.select(selector)
+        tenders = []
+        for el in elements[:10]:
+            tenders.append({
+                "title": el.get_text(strip=True),
+                "link": el.get("href", url)
             })
-        except sqlite3.IntegrityError:
-            continue
-        except Exception:
-            logging.exception("Error inserting tender")
-    conn.close()
-    logging.info(f"Added {len(added)} new tenders.")
-    return added
+        return tenders
+    except Exception as e:
+        logging.exception(f"HTML error {url}")
+        return []
 
-def get_subscriptions():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, keyword FROM subscriptions")
-    rows = cur.fetchall()
-    conn.close()
-    subs = {}
-    for user_id, keyword in rows:
-        subs.setdefault(keyword.lower(), set()).add(user_id)
-    return subs
-
-def add_subscription(user_id: int, keyword: str):
-    conn = get_conn()
-    cur = conn.cursor()
+def parse_xml(url):
     try:
-        cur.execute("INSERT OR IGNORE INTO subscriptions (user_id, keyword) VALUES (?, ?)", (user_id, keyword.strip().lower()))
-        conn.commit()
-    except Exception:
-        logging.exception("Failed to add subscription")
-    finally:
-        conn.close()
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+        tenders = []
+        for tender in root.findall(".//tender"):
+            tenders.append({
+                "title": tender.findtext("title"),
+                "link": tender.findtext("url"),
+                "date": tender.findtext("date")
+            })
+        return tenders
+    except Exception as e:
+        logging.exception(f"XML error {url}")
+        return []
 
-def remove_subscription(user_id: int, keyword: str):
-    conn = get_conn()
-    cur = conn.cursor()
+def parse_json(url):
     try:
-        cur.execute("DELETE FROM subscriptions WHERE user_id=? AND keyword=?", (user_id, keyword.strip().lower()))
-        conn.commit()
-    except Exception:
-        logging.exception("Failed to remove subscription")
-    finally:
-        conn.close()
-
-def list_user_keywords(user_id: int):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT keyword FROM subscriptions WHERE user_id=?", (user_id,))
-    rows = [r[0] for r in cur.fetchall()]
-    conn.close()
-    return rows
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("results") or data.get("data") or data.get("tenders") or []
+        tenders = []
+        for t in items[:10]:
+            tenders.append({
+                "purchase_number": t.get("purchase_number") or t.get("id"),
+                "name": t.get("name_ru") or t.get("name") or t.get("title"),
+                "customer": t.get("ref_customer_name_ru") or t.get("customer"),
+                "amount": t.get("amount"),
+                "publish_date": t.get("publish_date") or t.get("date")
+            })
+        return tenders
+    except Exception as e:
+        logging.exception(f"JSON error {url}")
+        return []
