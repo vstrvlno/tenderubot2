@@ -10,7 +10,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiohttp import web
 
-import parser as tender_parser  # импортируем твой parser.py
+import tender_parser  # импортируем твой parser.py
 
 # --- Загружаем переменные окружения ---
 load_dotenv()
@@ -214,3 +214,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Shutting down...")
+
