@@ -1,0 +1,18 @@
+SITES = [
+    {"name": "Egov.kz — Госзакупки", "type": "json", "url": "https://ows.goszakup.gov.kz/v3/public/orders", "selector": None},
+    {"name": "NAP / zakupki.gov.kz JSON", "type": "json", "url": "https://zakupki.gov.kz/api/json", "selector": None},
+    {"name": "NAP / zakupki.gov.kz XML", "type": "xml", "url": "https://zakupki.gov.kz/api/xml", "selector": None},
+    {"name": "Astana Zholy", "type": "xml", "url": "https://tenders.railways.kz", "selector": None},
+    {"name": "Tender.kz", "type": "html", "url": "https://tender.kz", "selector": ".tender-item a"},
+    {"name": "TenderExpert.kz", "type": "html", "url": "https://tenderexpert.kz", "selector": ".tender-item a"},
+    {"name": "SmartTender.kz", "type": "html", "url": "https://smarttender.kz", "selector": ".tender-item a"},
+    {"name": "ETP KASE", "type": "html", "url": "https://etp.kase.kz", "selector": ".tender-row a"},
+    {"name": "KMG Tender", "type": "xml", "url": "https://tender.kmg.kz", "selector": None},
+    {"name": "KEGOC", "type": "html", "url": "https://tenders.kegoc.kz", "selector": ".tender-item a"},
+    {"name": "Kazakhmys", "type": "html", "url": "https://procurement.kazakhmys.kz", "selector": ".tender-item a"},
+    {"name": "Samruk-Kazyna", "type": "html", "url": "https://www.samruk-kazyna.kz/en/procurement/", "selector": ".tender-item a"},
+    {"name": "KazTransOil", "type": "html", "url": "https://www.kaztransoil.kz/procurement/", "selector": ".tender-item a"},
+    {"name": "Акиматы", "type": "html", "url": None, "selector": ".tender-item a"},
+    {"name": "Коммунальные предприятия", "type": "html", "url": "https://aktobe-vodokanal.kz", "selector": ".tender-item a"},
+    {"name": "RSS агрегаторы", "type": "rss", "url": "https://tendernews.kz/rss", "selector": None},
+]
