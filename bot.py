@@ -6,6 +6,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 
@@ -35,9 +36,9 @@ AWAITING_KEYWORD = {}  # user_id -> action: "add" или "remove"
 
 # --- Хендлеры сообщений ---
 @dp.message()
-async def handle_message(message: types.Message):
-    text = (message.text or "").strip()
+async def echo_handler(message: types.Message):
     user_id = message.from_user.id
+    text = (message.text or "").strip()
 
     if user_id in AWAITING_KEYWORD:
         action = AWAITING_KEYWORD.pop(user_id)
@@ -56,15 +57,17 @@ async def handle_message(message: types.Message):
 
     await message.answer("Я принимаю команды. Набери /help чтобы увидеть список команд.")
 
+
 # --- Команды ---
-@dp.message(commands=["start"])
+@dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         "Привет! Я TenderuBot — отправляю тендеры по ключевым словам.\n\n"
         "Команды: /help"
     )
 
-@dp.message(commands=["help"])
+
+@dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer(
         "/start - запустить бота\n"
@@ -73,16 +76,18 @@ async def cmd_help(message: types.Message):
         "/addkeyword - добавить ключевое слово\n"
         "/removekeyword - удалить ключевое слово\n"
         "/listkeywords - показать ваши ключевые слова\n"
-        "/fetch - принудительно запустить парсер"
+        "/parse - принудительно запустить парсер"
     )
 
-@dp.message(commands=["about"])
+
+@dp.message(Command("about"))
 async def cmd_about(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Что делает бот?", callback_data="about_info")],
         [InlineKeyboardButton(text="Статистика", callback_data="about_stats")]
     ])
     await message.answer("О боте:", reply_markup=kb)
+
 
 @dp.callback_query()
 async def handle_callback(callback: types.CallbackQuery):
@@ -109,19 +114,22 @@ async def handle_callback(callback: types.CallbackQuery):
     except Exception:
         logging.exception("Error handling callback")
 
-@dp.message(commands=["addkeyword"])
+
+@dp.message(Command("addkeyword"))
 async def cmd_addkeyword(message: types.Message):
     user_id = message.from_user.id
     AWAITING_KEYWORD[user_id] = "add"
     await message.answer("Отправьте ключевое слово (одно слово или фразу) — я подпишу вас на него.")
 
-@dp.message(commands=["removekeyword"])
+
+@dp.message(Command("removekeyword"))
 async def cmd_removekeyword(message: types.Message):
     user_id = message.from_user.id
     AWAITING_KEYWORD[user_id] = "remove"
     await message.answer("Отправьте ключевое слово которое хотите удалить из подписок.")
 
-@dp.message(commands=["listkeywords"])
+
+@dp.message(Command("listkeywords"))
 async def cmd_listkeywords(message: types.Message):
     user_id = message.from_user.id
     rows = tender_parser.list_user_keywords(user_id)
@@ -130,11 +138,13 @@ async def cmd_listkeywords(message: types.Message):
     else:
         await message.answer("Ваши ключевые слова:\n" + "\n".join(f"- {r}" for r in rows))
 
-@dp.message(commands=["fetch"])
-async def cmd_fetch(message: types.Message):
+
+@dp.message(Command("parse"))
+async def cmd_parse(message: types.Message):
     await message.answer("Запрашиваю новые тендеры...")
     new = await run_parser_once_and_notify()
     await message.answer(f"Готово. Добавлено {len(new)} новых тендеров.")
+
 
 # --- Парсер + уведомление ---
 async def run_parser_once_and_notify():
@@ -171,6 +181,7 @@ async def run_parser_once_and_notify():
     logging.info(f"Notifications sent to {len(notifications)} users.")
     return added
 
+
 # --- Фоновый polling ---
 async def polling_task():
     await asyncio.sleep(5)
@@ -183,9 +194,11 @@ async def polling_task():
             logging.exception("Error in periodic parser run")
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
+
 # --- HTTP сервер (для Render) ---
 async def handle_root(request):
     return web.Response(text="TenderuBot is running")
+
 
 async def start_webserver():
     app = web.Application()
@@ -196,6 +209,7 @@ async def start_webserver():
     await site.start()
     logging.info(f"Web server started on port {PORT}")
 
+
 # --- Main ---
 async def main():
     tender_parser.create_tables()
@@ -204,13 +218,11 @@ async def main():
         polling_task(),
         dp.start_polling(bot, allowed_updates=types.AllowedUpdates.all())
     )
+    await bot.session.close()  # корректное закрытие сессии
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Shutting down...")
-        try:
-            asyncio.run(bot.session.close())
-        except Exception:
-            pass
