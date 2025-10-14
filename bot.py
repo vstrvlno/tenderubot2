@@ -1,82 +1,48 @@
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.types import Message
-from aiogram.filters import Command
+import os
 import asyncio
-import parser  # импортируем наш parser.py
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import Message
+from dotenv import load_dotenv
+from parser import parse_data  # Импорт функции парсера
 
-# === НАСТРОЙКИ ===
-TOKEN = "ВАШ_ТОКЕН_БОТА"
-ADMIN_ID = 123456789  # ваш Telegram ID
+# Загружаем переменные окружения
+load_dotenv()
 
-# === ИНИЦИАЛИЗАЦИЯ ===
+TOKEN = os.getenv("TOKEN")
+if not TOKEN:
+    raise ValueError("Переменная TOKEN не задана!")
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Создаем таблицы при старте
-parser.create_tables()
-
-# === КОМАНДЫ ===
+# Команда /start
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
-    await message.answer("Привет! Отправь /help для списка команд.")
+async def start_handler(message: Message):
+    await message.answer("Привет! Бот запущен ✅")
 
-@dp.message(Command("help"))
-async def cmd_help(message: Message):
-    text = (
-        "/subscribe <слово> - подписаться на ключевое слово\n"
-        "/unsubscribe <слово> - отписаться\n"
-        "/list_keywords - список ваших ключевых слов\n"
-        "/new_tenders - показать новые тендеры"
-    )
-    await message.answer(text)
+# Команда /parse - запускает парсер
+@dp.message(Command("parse"))
+async def parse_handler(message: Message):
+    await message.answer("Начинаю парсинг данных...")
+    try:
+        data = parse_data()  # вызываем функцию из parser.py
+        await message.answer(f"Данные успешно получены:\n{data}")
+    except Exception as e:
+        await message.answer(f"Ошибка при парсинге: {e}")
 
-@dp.message(Command("subscribe"))
-async def cmd_subscribe(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Использование: /subscribe <слово>")
-        return
-    keyword = args[1].strip()
-    parser.add_subscription(message.from_user.id, keyword)
-    await message.answer(f"Подписка на '{keyword}' активирована.")
+# Echo-хендлер для проверки сообщений
+@dp.message()
+async def echo_handler(message: Message):
+    await message.answer(f"Ты написал: {message.text}")
 
-@dp.message(Command("unsubscribe"))
-async def cmd_unsubscribe(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Использование: /unsubscribe <слово>")
-        return
-    keyword = args[1].strip()
-    parser.remove_subscription(message.from_user.id, keyword)
-    await message.answer(f"Подписка на '{keyword}' удалена.")
+# Запуск бота
+async def main():
+    try:
+        print("Бот запущен...")
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
-@dp.message(Command("list_keywords"))
-async def cmd_list_keywords(message: Message):
-    keywords = parser.get_user_keywords(message.from_user.id)
-    if not keywords:
-        await message.answer("У вас нет подписок.")
-        return
-    await message.answer("Ваши ключевые слова: " + ", ".join(keywords))
-
-@dp.message(Command("new_tenders"))
-async def cmd_new_tenders(message: Message):
-    keywords = parser.get_user_keywords(message.from_user.id)
-    if not keywords:
-        await message.answer("У вас нет ключевых слов для поиска.")
-        return
-    texts = []
-    for k in keywords:
-        tenders = parser.get_tenders_by_keyword(k)
-        if tenders:
-            for t in tenders:
-                texts.append(f"{t[0]}\nЗаказчик: {t[1]}\nСумма: {t[2]}\nДата: {t[3]}\nНомер: {t[4]}\n")
-    if not texts:
-        await message.answer("Новых тендеров по вашим ключевым словам нет.")
-        return
-    await message.answer("\n\n".join(texts))
-
-# === ЗАПУСК БОТА ===
 if __name__ == "__main__":
-    import asyncio
-    from aiogram import executor
-    asyncio.run(dp.start_polling(bot))
+    asyncio.run(main())
