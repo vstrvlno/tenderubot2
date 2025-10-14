@@ -1,20 +1,17 @@
-# Используем стабильный Python 3.11.9
-FROM python:3.11.9-slim
+# РСЃРїРѕР»СЊР·СѓРµРј РѕС„РёС†РёР°Р»СЊРЅС‹Р№ Python РѕР±СЂР°Р·
+FROM python:3.12-slim
 
-# Устанавливаем рабочую директорию
+# РЈСЃС‚Р°РЅР°РІР»РёРІР°РµРј СЂР°Р±РѕС‡СѓСЋ РґРёСЂРµРєС‚РѕСЂРёСЋ
 WORKDIR /app
 
-# Копируем и устанавливаем зависимости
-COPY requirements.txt .
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Копируем весь проект
+# РљРѕРїРёСЂСѓРµРј С„Р°Р№Р»С‹ РїСЂРѕРµРєС‚Р°
 COPY . .
 
-# Загружаем переменные окружения из .env
-# (Render автоматически подставит свои Environment Variables)
-ENV PYTHONUNBUFFERED=1
+# РЈСЃС‚Р°РЅР°РІР»РёРІР°РµРј Р·Р°РІРёСЃРёРјРѕСЃС‚Рё
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Запуск бота
+# Р­РєСЃРїРѕСЂС‚РёСЂСѓРµРј РїРѕСЂС‚ РґР»СЏ Render
+EXPOSE 10000
+
+# РљРѕРјР°РЅРґР° Р·Р°РїСѓСЃРєР° Р±РѕС‚Р°
 CMD ["python", "bot.py"]
