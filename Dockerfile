@@ -22,3 +22,5 @@ EXPOSE 10000
 
 # --- Команда для запуска бота ---
 CMD ["python", "bot.py"]
+
+pip install beautifulsoup4 requests sqlite3 aiogram aiohttp python-dotenv
