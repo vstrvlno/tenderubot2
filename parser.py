@@ -1,129 +1,130 @@
 import requests
 import sqlite3
 import logging
+from datetime import datetime
 
-# === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
     filename="parser.log",
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-# === НАСТРОЙКИ ===
 DB_PATH = "database.db"
-LIMIT = 20
 BASE_URL = "https://ows.goszakup.gov.kz/v3/public/orders"
+DEFAULT_LIMIT = 30
 
-# === СОЗДАНИЕ ТАБЛИЦ ===
+def get_conn():
+    return sqlite3.connect(DB_PATH, timeout=30)
+
 def create_tables():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS tenders (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             purchase_number TEXT UNIQUE,
             name TEXT,
             customer TEXT,
             amount REAL,
-            publish_date TEXT
+            publish_date TEXT,
+            inserted_at TEXT
         )
     """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             keyword TEXT,
-            PRIMARY KEY(user_id, keyword)
+            UNIQUE(user_id, keyword)
         )
     """)
     conn.commit()
     conn.close()
+    logging.info("DB tables ensured.")
 
-# === ПОЛУЧЕНИЕ ТЕНДЕРОВ ===
-def fetch_tenders():
-    params = {"limit": LIMIT, "sort_by": "-publish_date"}
+def fetch_tenders(limit=DEFAULT_LIMIT):
+    params = {"limit": limit, "sort_by": "-publish_date"}
     try:
-        response = requests.get(BASE_URL, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        logging.info(f"Получено {len(data)} тендеров")
-        return data
+        r = requests.get(BASE_URL, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("results") or data.get("data") or []
+        logging.info(f"Fetched {len(items)} tenders from API")
+        return items
     except Exception as e:
-        logging.error(f"Ошибка при запросе API: {e}")
+        logging.exception("Error fetching tenders")
         return []
 
-# === СОХРАНЕНИЕ НОВЫХ ТЕНДЕРОВ ===
-def save_tenders(tenders):
-    conn = sqlite3.connect(DB_PATH)
+def save_new_tenders(tenders):
+    conn = get_conn()
     cur = conn.cursor()
-    new_count = 0
+    added = []
     for t in tenders:
-        purchase_number = t.get("purchase_number")
-        name = t.get("name_ru", "")
-        customer = t.get("ref_customer_name_ru", "")
-        amount = t.get("amount", 0)
-        publish_date = t.get("publish_date", "")
+        name = t.get("name_ru") or t.get("name") or ""
+        purchase_number = t.get("purchase_number") or t.get("id")
+        customer = t.get("ref_customer_name_ru") or t.get("customer") or ""
+        amount = t.get("amount") or 0
+        publish_date = t.get("publish_date") or t.get("publishDate") or ""
+        if not purchase_number:
+            continue
         try:
             cur.execute("""
-                INSERT INTO tenders (purchase_number, name, customer, amount, publish_date)
-                VALUES (?, ?, ?, ?, ?)
-            """, (purchase_number, name, customer, amount, publish_date))
-            new_count += 1
+                INSERT INTO tenders (purchase_number, name, customer, amount, publish_date, inserted_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (str(purchase_number), name, customer, amount, publish_date, datetime.utcnow().isoformat()))
+            conn.commit()
+            added.append({
+                "purchase_number": purchase_number,
+                "name": name,
+                "customer": customer,
+                "amount": amount,
+                "publish_date": publish_date
+            })
         except sqlite3.IntegrityError:
             continue
-    conn.commit()
+        except Exception:
+            logging.exception("Error inserting tender")
     conn.close()
-    logging.info(f"Добавлено {new_count} новых тендеров")
-    return new_count
+    logging.info(f"Added {len(added)} new tenders.")
+    return added
 
-# === ПОЛУЧЕНИЕ ТЕНДЕРОВ ПО КЛЮЧЕВОМУ СЛОВУ ===
-def get_tenders_by_keyword(keyword):
-    conn = sqlite3.connect(DB_PATH)
+def get_subscriptions():
+    conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT name, customer, amount, publish_date, purchase_number
-        FROM tenders
-        WHERE LOWER(name) LIKE ?
-        ORDER BY publish_date DESC
-        LIMIT 10
-    """, (f"%{keyword.lower()}%",))
+    cur.execute("SELECT user_id, keyword FROM subscriptions")
     rows = cur.fetchall()
     conn.close()
-    return rows
+    subs = {}
+    for user_id, keyword in rows:
+        subs.setdefault(keyword.lower(), set()).add(user_id)
+    return subs
 
-# === ПОЛУЧЕНИЕ ВСЕХ ПОДПИСЧИКОВ ===
-def get_subscribers():
-    conn = sqlite3.connect(DB_PATH)
+def add_subscription(user_id: int, keyword: str):
+    conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT DISTINCT user_id FROM subscriptions")
-    rows = [r[0] for r in cur.fetchall()]
-    conn.close()
-    return rows
+    try:
+        cur.execute("INSERT OR IGNORE INTO subscriptions (user_id, keyword) VALUES (?, ?)", (user_id, keyword.strip().lower()))
+        conn.commit()
+    except Exception:
+        logging.exception("Failed to add subscription")
+    finally:
+        conn.close()
 
-# === ПОЛУЧЕНИЕ КЛЮЧЕВЫХ СЛОВ ПОЛЬЗОВАТЕЛЯ ===
-def get_user_keywords(user_id):
-    conn = sqlite3.connect(DB_PATH)
+def remove_subscription(user_id: int, keyword: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM subscriptions WHERE user_id=? AND keyword=?", (user_id, keyword.strip().lower()))
+        conn.commit()
+    except Exception:
+        logging.exception("Failed to remove subscription")
+    finally:
+        conn.close()
+
+def list_user_keywords(user_id: int):
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT keyword FROM subscriptions WHERE user_id=?", (user_id,))
     rows = [r[0] for r in cur.fetchall()]
     conn.close()
     return rows
-
-# === ДОБАВЛЕНИЕ/УДАЛЕНИЕ ПОДПИСОК ===
-def add_subscription(user_id, keyword):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    try:
-        cur.execute("INSERT OR IGNORE INTO subscriptions(user_id, keyword) VALUES(?, ?)", (user_id, keyword))
-        conn.commit()
-        return True
-    except:
-        return False
-    finally:
-        conn.close()
-
-def remove_subscription(user_id, keyword):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM subscriptions WHERE user_id=? AND keyword=?", (user_id, keyword))
-    conn.commit()
-    conn.close()
