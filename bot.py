@@ -1,19 +1,21 @@
+# bot.py
 import os
 import asyncio
 import logging
+from datetime import datetime
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 
-import parser as tender_parser  # parser.py
+import parser as tender_parser  # импортируем твой parser.py
 
-# --- Загрузка .env ---
+# --- Загружаем переменные окружения ---
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 10000))
-POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", 60*5))
+POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", 60 * 5))  # 5 минут
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN not set in .env")
@@ -28,34 +30,57 @@ logging.basicConfig(
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- State ---
-AWAITING_KEYWORD = {}  # user_id -> "add" / "remove"
+# --- Простой state для добавления/удаления ключевых слов ---
+AWAITING_KEYWORD = {}  # user_id -> action: "add" или "remove"
+
+# --- Хендлеры сообщений ---
+@dp.message()
+async def handle_message(message: types.Message):
+    text = (message.text or "").strip()
+    user_id = message.from_user.id
+
+    if user_id in AWAITING_KEYWORD:
+        action = AWAITING_KEYWORD.pop(user_id)
+        keyword = text.strip()
+        if not keyword:
+            await message.answer("Ключевое слово пустое. Отмена.")
+            return
+
+        if action == "add":
+            tender_parser.add_subscription(user_id, keyword)
+            await message.answer(f"✅ Подписка на '{keyword}' добавлена.")
+        elif action == "remove":
+            tender_parser.remove_subscription(user_id, keyword)
+            await message.answer(f"✅ Подписка на '{keyword}' удалена (если была).")
+        return
+
+    await message.answer("Я принимаю команды. Набери /help чтобы увидеть список команд.")
 
 # --- Команды ---
 @dp.message(commands=["start"])
 async def cmd_start(message: types.Message):
     await message.answer(
-        "Привет! Я TenderuBot — отправляю тендеры по ключевым словам.\n"
-        "Используй /help для списка команд."
+        "Привет! Я TenderuBot — отправляю тендеры по ключевым словам.\n\n"
+        "Команды: /help"
     )
 
 @dp.message(commands=["help"])
 async def cmd_help(message: types.Message):
     await message.answer(
         "/start - запустить бота\n"
-        "/help - эта справка\n"
+        "/help - справка\n"
         "/about - о боте\n"
         "/addkeyword - добавить ключевое слово\n"
         "/removekeyword - удалить ключевое слово\n"
         "/listkeywords - показать ваши ключевые слова\n"
-        "/fetch - принудительно запустить парсер\n"
+        "/fetch - принудительно запустить парсер"
     )
 
 @dp.message(commands=["about"])
 async def cmd_about(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("Что делает бот?", callback_data="about_info")],
-        [InlineKeyboardButton("Статистика", callback_data="about_stats")]
+        [InlineKeyboardButton(text="Что делает бот?", callback_data="about_info")],
+        [InlineKeyboardButton(text="Статистика", callback_data="about_stats")]
     ])
     await message.answer("О боте:", reply_markup=kb)
 
@@ -64,7 +89,7 @@ async def handle_callback(callback: types.CallbackQuery):
     data = callback.data or ""
     try:
         if data == "about_info":
-            await callback.message.answer("Я нахожу тендеры с goszakup и рассылаю по ключевым словам.")
+            await callback.message.answer("Я нахожу тендеры с goszakup и рассылаю их по ключевым словам.")
         elif data == "about_stats":
             conn = tender_parser.get_conn()
             cur = conn.cursor()
@@ -75,23 +100,31 @@ async def handle_callback(callback: types.CallbackQuery):
             users = users_row[0] if users_row else 0
             conn.close()
             await callback.message.answer(f"Тендеров в базе: {total}\nПодписчиков: {users}")
-        await callback.answer()
+        else:
+            await callback.message.answer("Неизвестная кнопка.")
+        try:
+            await callback.answer()
+        except Exception as e:
+            logging.warning(f"Callback answer failed: {e}")
     except Exception:
-        logging.exception("Callback error")
+        logging.exception("Error handling callback")
 
 @dp.message(commands=["addkeyword"])
 async def cmd_addkeyword(message: types.Message):
-    AWAITING_KEYWORD[message.from_user.id] = "add"
-    await message.answer("Отправьте ключевое слово для подписки:")
+    user_id = message.from_user.id
+    AWAITING_KEYWORD[user_id] = "add"
+    await message.answer("Отправьте ключевое слово (одно слово или фразу) — я подпишу вас на него.")
 
 @dp.message(commands=["removekeyword"])
 async def cmd_removekeyword(message: types.Message):
-    AWAITING_KEYWORD[message.from_user.id] = "remove"
-    await message.answer("Отправьте ключевое слово для удаления:")
+    user_id = message.from_user.id
+    AWAITING_KEYWORD[user_id] = "remove"
+    await message.answer("Отправьте ключевое слово которое хотите удалить из подписок.")
 
 @dp.message(commands=["listkeywords"])
 async def cmd_listkeywords(message: types.Message):
-    rows = tender_parser.list_user_keywords(message.from_user.id)
+    user_id = message.from_user.id
+    rows = tender_parser.list_user_keywords(user_id)
     if not rows:
         await message.answer("У вас нет подписок.")
     else:
@@ -99,48 +132,32 @@ async def cmd_listkeywords(message: types.Message):
 
 @dp.message(commands=["fetch"])
 async def cmd_fetch(message: types.Message):
-    await message.answer("Запускаю парсер...")
+    await message.answer("Запрашиваю новые тендеры...")
     new = await run_parser_once_and_notify()
     await message.answer(f"Готово. Добавлено {len(new)} новых тендеров.")
 
-# --- Обработка обычного текста ---
-@dp.message()
-async def handle_message(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in AWAITING_KEYWORD:
-        action = AWAITING_KEYWORD.pop(user_id)
-        keyword = message.text.strip()
-        if not keyword:
-            await message.answer("Ключевое слово пустое. Отмена.")
-            return
-        if action == "add":
-            tender_parser.add_subscription(user_id, keyword)
-            await message.answer(f"✅ Подписка на '{keyword}' добавлена.")
-        else:
-            tender_parser.remove_subscription(user_id, keyword)
-            await message.answer(f"✅ Подписка на '{keyword}' удалена.")
-    else:
-        await message.answer("Я принимаю команды. Введите /help для списка команд.")
-
-# --- Парсер + уведомления ---
+# --- Парсер + уведомление ---
 async def run_parser_once_and_notify():
     loop = asyncio.get_event_loop()
     tenders = await loop.run_in_executor(None, tender_parser.fetch_tenders, 50)
     added = await loop.run_in_executor(None, tender_parser.save_new_tenders, tenders)
 
     if not added:
-        logging.info("No new tenders.")
+        logging.info("No new tenders to process.")
         return []
 
     subs = await loop.run_in_executor(None, tender_parser.get_subscriptions)
     notifications = {}
     for t in added:
         name = (t.get("name") or "").lower()
-        msg = f"📌 {t.get('name')}\nНомер: {t.get('purchase_number')}\nЗаказчик: {t.get('customer')}\nСумма: {t.get('amount')}\nДата: {t.get('publish_date')}"
+        summary = (
+            f"📌 {t.get('name')}\nНомер: {t.get('purchase_number')}\n"
+            f"Заказчик: {t.get('customer')}\nСумма: {t.get('amount')}\nДата: {t.get('publish_date')}"
+        )
         for kw, users in subs.items():
-            if kw in name:
+            if kw and kw.lower() in name:
                 for u in users:
-                    notifications.setdefault(u, []).append(msg)
+                    notifications.setdefault(u, []).append(summary)
 
     for user_id, msgs in notifications.items():
         try:
@@ -149,9 +166,9 @@ async def run_parser_once_and_notify():
             if len(msgs) > 10:
                 await bot.send_message(chat_id=user_id, text=f"...и ещё {len(msgs)-10} тендеров.")
         except Exception:
-            logging.exception(f"Notify user {user_id} failed.")
+            logging.exception(f"Failed to notify user {user_id}")
 
-    logging.info(f"Sent notifications to {len(notifications)} users.")
+    logging.info(f"Notifications sent to {len(notifications)} users.")
     return added
 
 # --- Фоновый polling ---
@@ -163,10 +180,10 @@ async def polling_task():
             await run_parser_once_and_notify()
             logging.info("Periodic parser run finished")
         except Exception:
-            logging.exception("Error in periodic parser")
+            logging.exception("Error in periodic parser run")
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-# --- Webserver для Render ---
+# --- HTTP сервер (для Render) ---
 async def handle_root(request):
     return web.Response(text="TenderuBot is running")
 
@@ -185,7 +202,7 @@ async def main():
     await asyncio.gather(
         start_webserver(),
         polling_task(),
-        dp.start_polling(bot)
+        dp.start_polling(bot, allowed_updates=types.AllowedUpdates.all())
     )
 
 if __name__ == "__main__":
