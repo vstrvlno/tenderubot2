@@ -6,8 +6,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
 from aiohttp import web
 
 import parser as tender_parser  # импортируем твой parser.py
@@ -34,38 +34,13 @@ dp = Dispatcher()
 # --- Простой state для добавления/удаления ключевых слов ---
 AWAITING_KEYWORD = {}  # user_id -> action: "add" или "remove"
 
-# --- Хендлеры сообщений ---
-@dp.message()
-async def echo_handler(message: types.Message):
-    user_id = message.from_user.id
-    text = (message.text or "").strip()
-
-    if user_id in AWAITING_KEYWORD:
-        action = AWAITING_KEYWORD.pop(user_id)
-        keyword = text.strip()
-        if not keyword:
-            await message.answer("Ключевое слово пустое. Отмена.")
-            return
-
-        if action == "add":
-            tender_parser.add_subscription(user_id, keyword)
-            await message.answer(f"✅ Подписка на '{keyword}' добавлена.")
-        elif action == "remove":
-            tender_parser.remove_subscription(user_id, keyword)
-            await message.answer(f"✅ Подписка на '{keyword}' удалена (если была).")
-        return
-
-    await message.answer("Я принимаю команды. Набери /help чтобы увидеть список команд.")
-
-
-# --- Команды ---
+# --- Хендлеры команд ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         "Привет! Я TenderuBot — отправляю тендеры по ключевым словам.\n\n"
         "Команды: /help"
     )
-
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
@@ -79,7 +54,6 @@ async def cmd_help(message: types.Message):
         "/parse - принудительно запустить парсер"
     )
 
-
 @dp.message(Command("about"))
 async def cmd_about(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -87,7 +61,6 @@ async def cmd_about(message: types.Message):
         [InlineKeyboardButton(text="Статистика", callback_data="about_stats")]
     ])
     await message.answer("О боте:", reply_markup=kb)
-
 
 @dp.callback_query()
 async def handle_callback(callback: types.CallbackQuery):
@@ -107,13 +80,9 @@ async def handle_callback(callback: types.CallbackQuery):
             await callback.message.answer(f"Тендеров в базе: {total}\nПодписчиков: {users}")
         else:
             await callback.message.answer("Неизвестная кнопка.")
-        try:
-            await callback.answer()
-        except Exception as e:
-            logging.warning(f"Callback answer failed: {e}")
+        await callback.answer()
     except Exception:
         logging.exception("Error handling callback")
-
 
 @dp.message(Command("addkeyword"))
 async def cmd_addkeyword(message: types.Message):
@@ -121,13 +90,11 @@ async def cmd_addkeyword(message: types.Message):
     AWAITING_KEYWORD[user_id] = "add"
     await message.answer("Отправьте ключевое слово (одно слово или фразу) — я подпишу вас на него.")
 
-
 @dp.message(Command("removekeyword"))
 async def cmd_removekeyword(message: types.Message):
     user_id = message.from_user.id
     AWAITING_KEYWORD[user_id] = "remove"
     await message.answer("Отправьте ключевое слово которое хотите удалить из подписок.")
-
 
 @dp.message(Command("listkeywords"))
 async def cmd_listkeywords(message: types.Message):
@@ -138,13 +105,34 @@ async def cmd_listkeywords(message: types.Message):
     else:
         await message.answer("Ваши ключевые слова:\n" + "\n".join(f"- {r}" for r in rows))
 
-
 @dp.message(Command("parse"))
 async def cmd_parse(message: types.Message):
     await message.answer("Запрашиваю новые тендеры...")
     new = await run_parser_once_and_notify()
     await message.answer(f"Готово. Добавлено {len(new)} новых тендеров.")
 
+# --- Echo для всех остальных сообщений ---
+@dp.message()
+async def echo_handler(message: types.Message):
+    text = (message.text or "").strip()
+    user_id = message.from_user.id
+
+    if user_id in AWAITING_KEYWORD:
+        action = AWAITING_KEYWORD.pop(user_id)
+        keyword = text.strip()
+        if not keyword:
+            await message.answer("Ключевое слово пустое. Отмена.")
+            return
+
+        if action == "add":
+            tender_parser.add_subscription(user_id, keyword)
+            await message.answer(f"✅ Подписка на '{keyword}' добавлена.")
+        elif action == "remove":
+            tender_parser.remove_subscription(user_id, keyword)
+            await message.answer(f"✅ Подписка на '{keyword}' удалена (если была).")
+        return
+
+    await message.answer("Я принимаю команды. Набери /help чтобы увидеть список команд.")
 
 # --- Парсер + уведомление ---
 async def run_parser_once_and_notify():
@@ -181,7 +169,6 @@ async def run_parser_once_and_notify():
     logging.info(f"Notifications sent to {len(notifications)} users.")
     return added
 
-
 # --- Фоновый polling ---
 async def polling_task():
     await asyncio.sleep(5)
@@ -194,11 +181,9 @@ async def polling_task():
             logging.exception("Error in periodic parser run")
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-
 # --- HTTP сервер (для Render) ---
 async def handle_root(request):
     return web.Response(text="TenderuBot is running")
-
 
 async def start_webserver():
     app = web.Application()
@@ -209,17 +194,20 @@ async def start_webserver():
     await site.start()
     logging.info(f"Web server started on port {PORT}")
 
-
 # --- Main ---
 async def main():
     tender_parser.create_tables()
-    await asyncio.gather(
-        start_webserver(),
-        polling_task(),
-        dp.start_polling(bot, allowed_updates=types.AllowedUpdates.all())
-    )
-    await bot.session.close()  # корректное закрытие сессии
 
+    # Запуск веб-сервера и фонового polling
+    web_task = asyncio.create_task(start_webserver())
+    polling_bg_task = asyncio.create_task(polling_task())
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        polling_bg_task.cancel()
+        web_task.cancel()
+        await bot.session.close()
 
 if __name__ == "__main__":
     try:
