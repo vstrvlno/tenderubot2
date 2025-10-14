@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 
 @dp.message()
 async def echo(message: Message):
-    await message.answer(f"Привет, {message.from_user.first_name}!")
+    await message.answer(f"ГЏГ°ГЁГўГҐГІ, {message.from_user.first_name}!")
 
 async def main():
     await dp.start_polling(bot)
