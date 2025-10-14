@@ -1,149 +1,236 @@
-import logging
-import asyncio
+# bot.py
 import os
-import sqlite3
+import asyncio
+import logging
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 
-# === НАСТРОЙКИ ===
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # токен из .env
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # твой Telegram ID
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-# === ЛОГИРОВАНИЕ ===
-logging.basicConfig(level=logging.INFO)
-
-def log_message(user_id, username, text):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open("logs.txt", "a", encoding="utf-8") as f:
-        f.write(f"[{timestamp}] {username or 'unknown'} (id={user_id}): {text}\n")
-
-# === СОЗДАНИЕ БАЗЫ ДАННЫХ ===
-def init_db():
-    conn = sqlite3.connect("bot.db")
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE,
-            username TEXT,
-            first_name TEXT,
-            joined TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-def add_user(user_id, username, first_name):
-    conn = sqlite3.connect("bot.db")
-    c = conn.cursor()
-    c.execute("""
-        INSERT OR IGNORE INTO users (user_id, username, first_name, joined)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, username, first_name, datetime.now()))
-    conn.commit()
-    conn.close()
-
-# === КНОПКИ ===
-def get_main_keyboard():
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="ℹ️ О проекте", callback_data="about")],
-        [InlineKeyboardButton(text="📞 Поддержка", callback_data="support")],
-        [InlineKeyboardButton(text="📊 Моя статистика", callback_data="stats")]
-    ])
-    return keyboard
-
-# === КОМАНДЫ ===
-@dp.message(CommandStart())
-async def start_handler(message: Message):
-    add_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
-    log_message(message.from_user.id, message.from_user.username, "/start")
-    await message.answer(
-        f"Привет, {message.from_user.first_name}! 👋\n"
-        f"Я бот-помощник TenderuBot.\n"
-        f"Выбери действие ниже:",
-        reply_markup=get_main_keyboard()
-    )
-
-@dp.message(Command("help"))
-async def help_handler(message: Message):
-    log_message(message.from_user.id, message.from_user.username, "/help")
-    await message.answer(
-        "🛠 Доступные команды:\n"
-        "/start — начать работу с ботом\n"
-        "/help — справка\n"
-        "/about — информация о проекте\n"
-        "/logs — получить логи (только админ)"
-    )
-
-@dp.message(Command("about"))
-async def about_handler(message: Message):
-    log_message(message.from_user.id, message.from_user.username, "/about")
-    await message.answer("🤖 TenderuBot — это бот для автоматизации бизнес-процессов и интеграции с сайтами и документами.")
-
-@dp.message(Command("logs"))
-async def send_logs(message: Message):
-    if message.from_user.id == ADMIN_ID:
-        if os.path.exists("logs.txt"):
-            await message.answer_document(types.FSInputFile("logs.txt"))
-        else:
-            await message.answer("Файл логов пока пуст 🕳️")
-    else:
-        await message.answer("У тебя нет доступа к логам 🚫")
-
-# === ОБРАБОТКА КНОПОК ===
-@dp.callback_query(F.data == "about")
-async def about_callback(callback: types.CallbackQuery):
-    await callback.message.answer("TenderuBot создан для помощи компаниям и интеграции с сайтами и документами 📑")
-    await callback.answer()
-
-@dp.callback_query(F.data == "support")
-async def support_callback(callback: types.CallbackQuery):
-    await callback.message.answer("Связаться с поддержкой можно по адресу: support@tenderu.kz 💬")
-    await callback.answer()
-
-@dp.callback_query(F.data == "stats")
-async def stats_callback(callback: types.CallbackQuery):
-    conn = sqlite3.connect("bot.db")
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users")
-    total_users = c.fetchone()[0]
-    conn.close()
-    await callback.message.answer(f"👥 Всего пользователей: {total_users}")
-    await callback.answer()
-
-# === ЭХО ===
-@dp.message(F.text)
-async def echo_handler(message: Message):
-    log_message(message.from_user.id, message.from_user.username, message.text)
-    await message.answer(f"Ты написал: {message.text}")
-
-# === СЕРВЕР ДЛЯ RENDER ===
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 
-async def handle(request):
-    return web.Response(text="Bot is running ✅")
+import parser as tender_parser  # наш parser.py (в том же каталоге)
 
-async def start_server():
+# Загружаем .env
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+PORT = int(os.getenv("PORT", 10000))
+POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", 60 * 5))  # 5 минут по умолчанию
+
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN not set in .env")
+
+# Логирование
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+# Для простого "state" (когда пользователь отправляет ключевое слово после /addkeyword)
+AWAITING_KEYWORD = {}  # user_id -> action: "add" или "remove"
+
+# --- Хелперы для DB (используем функции из parser.py) ---
+# tender_parser.create_tables() создаёт таблицы
+
+# --- Команды ---
+@dp.message()
+async def handle_message(message: types.Message):
+    text = (message.text or "").strip()
+    user_id = message.from_user.id
+
+    # Если юзер в режиме добавления/удаления ключевого слова
+    if user_id in AWAITING_KEYWORD:
+        action = AWAITING_KEYWORD.pop(user_id)
+        keyword = text.strip()
+        if not keyword:
+            await message.answer("Ключевое слово пустое. Отмена.")
+            return
+
+        if action == "add":
+            tender_parser.add_subscription(user_id, keyword)
+            await message.answer(f"✅ Подписка на '{keyword}' добавлена.")
+        elif action == "remove":
+            tender_parser.remove_subscription(user_id, keyword)
+            await message.answer(f"✅ Подписка на '{keyword}' удалена (если была).")
+        return
+
+    # Прямой текст — можно обработать как запрос поиска
+    await message.answer("Я принимаю команды. Набери /help чтобы увидеть список команд.")
+
+
+@dp.message(commands=["start"])
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "Привет! Я TenderuBot — отправляю тендеры по ключевым словам.\n\n"
+        "Команды: /help"
+    )
+
+@dp.message(commands=["help"])
+async def cmd_help(message: types.Message):
+    await message.answer(
+        "/start - запустить бота\n"
+        "/help - эта справка\n"
+        "/about - о боте\n"
+        "/addkeyword - добавить ключевое слово (на которое вы подпишетесь)\n"
+        "/removekeyword - удалить ключевое слово\n"
+        "/listkeywords - показать ваши ключевые слова\n"
+        "/fetch - принудительно запустить парсер (только вы)\n"
+    )
+
+@dp.message(commands=["about"])
+async def cmd_about(message: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Что делает бот?", callback_data="about_info")],
+        [InlineKeyboardButton(text="Статистика", callback_data="about_stats")]
+    ])
+    await message.answer("О боте:", reply_markup=kb)
+
+@dp.callback_query()
+async def handle_callback(callback: types.CallbackQuery):
+    data = callback.data or ""
+    try:
+        if data == "about_info":
+            await callback.message.answer("Я нахожу тендеры с goszakup и рассылаю по ключевым словам.")
+        elif data == "about_stats":
+            # простая статистика
+            conn = tender_parser.get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM tenders")
+            total = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(DISTINCT user_id) FROM subscriptions")
+            users = cur.fetchone()[0] if cur.fetchone() is not None else None
+            conn.close()
+            await callback.message.answer(f"Тендеров в базе: {total}")
+        else:
+            await callback.message.answer("Неизвестная кнопка.")
+        # всегда безопасно пытаться ответить callback; если слишком поздно — поймаем исключение
+        try:
+            await callback.answer()
+        except Exception as e:
+            logging.warning(f"Callback answer failed (probably too old): {e}")
+    except Exception as e:
+        logging.exception("Error handling callback")
+
+@dp.message(commands=["addkeyword"])
+async def cmd_addkeyword(message: types.Message):
+    user_id = message.from_user.id
+    AWAITING_KEYWORD[user_id] = "add"
+    await message.answer("Отправьте ключевое слово (одно слово или фразу) — я подпишу вас на него.")
+
+@dp.message(commands=["removekeyword"])
+async def cmd_removekeyword(message: types.Message):
+    user_id = message.from_user.id
+    AWAITING_KEYWORD[user_id] = "remove"
+    await message.answer("Отправьте ключевое слово которое хотите удалить из подписок.")
+
+@dp.message(commands=["listkeywords"])
+async def cmd_listkeywords(message: types.Message):
+    user_id = message.from_user.id
+    rows = tender_parser.list_user_keywords(user_id)
+    if not rows:
+        await message.answer("У вас нет подписок.")
+    else:
+        await message.answer("Ваши ключевые слова:\n" + "\n".join(f"- {r}" for r in rows))
+
+@dp.message(commands=["fetch"])
+async def cmd_fetch(message: types.Message):
+    # привилегия: любой может запустить, но это ручной триггер
+    await message.answer("Запрашиваю новые тендеры...")
+    new = await run_parser_once_and_notify()
+    await message.answer(f"Готово. Добавлено {len(new)} новых тендеров.")
+
+# --- Парсер + уведомление ---
+async def run_parser_once_and_notify():
+    """
+    Запустит парсер, сохранит новые тендеры, сопоставит их с подписками и отправит сообщения.
+    Возвращает список добавленных tender dicts.
+    """
+    # fetch & save
+    loop = asyncio.get_event_loop()
+    tenders = await loop.run_in_executor(None, tender_parser.fetch_tenders, 50)
+    added = await loop.run_in_executor(None, tender_parser.save_new_tenders, tenders)  # список словарей
+
+    if not added:
+        logging.info("No new tenders to process.")
+        return []
+
+    # подгружаем подписки
+    subs = await loop.run_in_executor(None, tender_parser.get_subscriptions)  # dict keyword -> set(user_id)
+    # нормализуем ключевые слова
+    # пробегаем по новым тендерам и проверяем наличие ключевых слов
+    notifications = {}  # user_id -> list of messages
+    for t in added:
+        name = (t.get("name") or "").lower()
+        summary = f"📌 {t.get('name')}\nНомер: {t.get('purchase_number')}\nЗаказчик: {t.get('customer')}\nСумма: {t.get('amount')}\nДата: {t.get('publish_date')}"
+        for kw, users in subs.items():
+            if kw and kw.lower() in name:
+                for u in users:
+                    notifications.setdefault(u, []).append(summary)
+
+    # отправляем уведомления (по пользователям)
+    for user_id, msgs in notifications.items():
+        # склеим в одно сообщение (ограничение размера — простая реализация)
+        try:
+            for m in msgs[:10]:  # не шлём больше 10 тендеров за раз
+                await bot.send_message(chat_id=user_id, text=m)
+            if len(msgs) > 10:
+                await bot.send_message(chat_id=user_id, text=f"...и ещё {len(msgs)-10} тендеров.")
+        except Exception:
+            logging.exception(f"Failed to notify user {user_id}")
+
+    logging.info(f"Notifications sent to {len(notifications)} users.")
+    return added
+
+# --- Фоновая задача: периодический polling парсера ---
+async def polling_task():
+    await asyncio.sleep(5)  # даём сервису подняться
+    while True:
+        try:
+            logging.info("Periodic parser run started")
+            await run_parser_once_and_notify()
+            logging.info("Periodic parser run finished")
+        except Exception:
+            logging.exception("Error in periodic parser run")
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+# --- HTTP-сервер (для Render) ---
+async def handle_root(request):
+    return web.Response(text="TenderuBot is running")
+
+async def start_webserver():
     app = web.Application()
-    app.add_routes([web.get('/', handle)])
-    port = int(os.getenv("PORT", 8080))
+    app.add_routes([web.get("/", handle_root)])
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
+    logging.info(f"Web server started on port {PORT}")
 
-# === ЗАПУСК ===
+# --- main ---
 async def main():
-    init_db()
-    asyncio.create_task(start_server())
-    await dp.start_polling(bot)
+    # ensure DB tables
+    tender_parser.create_tables()
+
+    # запускаем веб-сервер + polling background + бот
+    await asyncio.gather(
+        start_webserver(),
+        polling_task(),
+        dp.start_polling(bot, allowed_updates=types.AllowedUpdates.all())
+    )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Shutting down...")
+        try:
+            asyncio.run(bot.session.close())
+        except Exception:
+            pass
