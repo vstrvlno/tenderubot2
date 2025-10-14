@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 
 @dp.message()
 async def echo(message: Message):
-    await message.answer(f"Привет!", {message.from_user.first_name}!")
+    await message.answer(f"Привет, {message.from_user.first_name}!")
 
 async def main():
     await dp.start_polling(bot)
@@ -45,3 +45,4 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.create_task(start_server())  # ← открывает порт для Render
     executor.start_polling(dp, skip_updates=True)
+
