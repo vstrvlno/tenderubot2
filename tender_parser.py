@@ -3,7 +3,8 @@ import sqlite3
 import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
-from db import DB_PATH, PLATFORMS  # импортируем площадки
+from db import DB_PATH
+from config import SITES as PLATFORMS # импортируем площадки
 
 logging.basicConfig(
     filename="parser.log",
@@ -124,3 +125,4 @@ def save_tender(purchase_number, name, customer, amount, publish_date, source):
         logging.exception("Error inserting tender")
     finally:
         conn.close()
+
