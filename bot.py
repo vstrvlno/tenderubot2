@@ -67,7 +67,7 @@ async def handle_callback(callback: types.CallbackQuery):
     data = callback.data or ""
     try:
         if data == "about_info":
-            await callback.message.answer("Я нахожу тендеры с goszakup и рассылаю их по ключевым словам.")
+            await callback.message.answer("Я нахожу тендеры и рассылаю их по ключевым словам.")
         elif data == "about_stats":
             conn = tender_parser.get_conn()
             cur = conn.cursor()
@@ -214,4 +214,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Shutting down...")
+
 
