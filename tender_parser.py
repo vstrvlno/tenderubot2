@@ -1,10 +1,11 @@
+# tender_parser.py
 import requests
 import sqlite3
 import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
 from db import DB_PATH
-from config import SITES as PLATFORMS # импортируем площадки
+from config import SITES as PLATFORMS  # импортируем площадки
 
 logging.basicConfig(
     filename="parser.log",
@@ -126,3 +127,88 @@ def save_tender(purchase_number, name, customer, amount, publish_date, source):
     finally:
         conn.close()
 
+# ----------------- Основной fetch -----------------
+def fetch_tenders(limit=50):
+    all_tenders = []
+
+    for site in PLATFORMS:
+        name = site.get("name")
+        site_type = site.get("type")
+        url = site.get("url")
+        selector = site.get("selector")
+
+        if not url:
+            continue
+
+        try:
+            if site_type == "json":
+                data = fetch_json(url)
+                if isinstance(data, list):
+                    for item in data[:limit]:
+                        purchase_number = item.get("id") or item.get("purchase_number")
+                        t_name = item.get("title") or item.get("name")
+                        customer = item.get("ref_customer_name_ru") or item.get("customer")
+                        amount = item.get("amount") or 0
+                        publish_date = item.get("date") or item.get("publish_date") or ""
+                        all_tenders.append({
+                            "purchase_number": purchase_number,
+                            "name": t_name,
+                            "customer": customer,
+                            "amount": amount,
+                            "publish_date": publish_date
+                        })
+            elif site_type == "html":
+                html = fetch_html(url)
+                if not html:
+                    continue
+                soup = BeautifulSoup(html, "html.parser")
+                items = soup.select(selector or "")
+                for el in items[:limit]:
+                    t_name = el.get_text(strip=True)
+                    purchase_number = el.get("href") or t_name
+                    all_tenders.append({
+                        "purchase_number": purchase_number,
+                        "name": t_name,
+                        "customer": "",
+                        "amount": 0,
+                        "publish_date": ""
+                    })
+            elif site_type == "xml":
+                html = fetch_html(url)
+                if not html:
+                    continue
+                soup = BeautifulSoup(html, "xml")
+                for item in soup.find_all("tender")[:limit]:
+                    purchase_number = item.find("id").text if item.find("id") else ""
+                    t_name = item.find("title").text if item.find("title") else ""
+                    customer = item.find("customer").text if item.find("customer") else ""
+                    amount = float(item.find("amount").text) if item.find("amount") else 0
+                    publish_date = item.find("date").text if item.find("date") else ""
+                    all_tenders.append({
+                        "purchase_number": purchase_number,
+                        "name": t_name,
+                        "customer": customer,
+                        "amount": amount,
+                        "publish_date": publish_date
+                    })
+            elif site_type == "rss":
+                html = fetch_html(url)
+                if not html:
+                    continue
+                soup = BeautifulSoup(html, "xml")
+                for item in soup.find_all("item")[:limit]:
+                    t_name = item.find("title").text if item.find("title") else ""
+                    purchase_number = item.find("link").text if item.find("link") else t_name
+                    publish_date = item.find("pubDate").text if item.find("pubDate") else ""
+                    all_tenders.append({
+                        "purchase_number": purchase_number,
+                        "name": t_name,
+                        "customer": "",
+                        "amount": 0,
+                        "publish_date": publish_date
+                    })
+        except Exception:
+            logging.exception(f"Error parsing site: {name}")
+
+    logging.info(f"Fetched {len(all_tenders)} tenders from platforms.")
+    return all_tenders
